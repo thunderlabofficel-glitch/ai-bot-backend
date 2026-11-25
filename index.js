@@ -256,7 +256,7 @@ app.get("/wa-qr", async (req, res) => {
       <img src="${qrImageUrl}" style="width:280px;height:280px;border:1px solid #ddd;padding:8px;border-radius:8px" />
       <p>Phone ke WhatsApp mein <b>Linked Devices &rarr; Link a Device</b> se scan karein.</p>
       <button onclick="location.reload()" style="padding:10px 18px;font-size:15px;cursor:pointer">Naya QR / Refresh</button>
-      <script>setTimeout(()=>location.reload(), 60000)</script>
+      <script>setTimeout(()=>location.reload(), 120000)</script>
     </div>
   `);
 });
