@@ -66,7 +66,108 @@ async function connectDB() {
 app.get("/", (req, res) => {
   res.json({ status: "online", service: "AI Omni-Bot Backend" });
 });
+// --- INSTAGRAM WEBHOOK (Meta DM / Events) ---
+app.get("/webhook/instagram", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
 
+  if (mode === "subscribe" && token === process.env.IG_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+  return res.sendStatus(403);
+});
+
+app.post("/webhook/instagram", async (req, res) => {
+  // Meta ko turant 200 OK bhejna zaroori hai taaki retry na aaye
+  res.sendStatus(200);
+
+  try {
+    const entry = req.body?.entry?.[0];
+    const messaging = entry?.messaging?.[0];
+    const senderId = messaging?.sender?.id;
+    const messageText = messaging?.message?.text;
+
+    if (!senderId || !messageText || messaging?.message?.is_echo) return;
+    if (!process.env.IG_ACCESS_TOKEN) return;
+
+    const reply = await generateAIReply("Instagram", "Viewer", messageText);
+
+    await fetch(
+      `https://graph.facebook.com/v21.0/me/messages?access_token=${process.env.IG_ACCESS_TOKEN}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipient: { id: senderId },
+          message: { text: reply },
+        }),
+      }
+    );
+  } catch (err) {
+    console.error("Instagram webhook error:", err.message);
+  }
+});
+
+// --- YOUTUBE LIVE CHAT AUTO-REPLY (Optional: YT_LIVE_CHAT_ID & YT_ACCESS_TOKEN set ho to) ---
+let seenYtMessageIds = new Set();
+
+async function pollYouTubeLiveChat() {
+  const liveChatId = process.env.YT_LIVE_CHAT_ID;
+  const accessToken = process.env.YT_ACCESS_TOKEN;
+  if (!liveChatId || !accessToken) return;
+
+  try {
+    const listUrl = `https://www.googleapis.com/youtube/v3/liveChat/messages?liveChatId=${encodeURIComponent(
+      liveChatId
+    )}&part=snippet,authorDetails&access_token=${encodeURIComponent(accessToken)}`;
+
+    const response = await fetch(listUrl);
+    const data = await response.json();
+    const items = data?.items || [];
+
+    for (const item of items) {
+      const msgId = item.id;
+      const text = item.snippet?.displayMessage;
+      const authorName = item.authorDetails?.displayName || "Viewer";
+
+      if (!msgId || !text || seenYtMessageIds.has(msgId)) continue;
+      seenYtMessageIds.add(msgId);
+
+      // Pehli baar load hone par purane messages ka spam bachane ke liye sirf naye messages ka reply karein
+      const publishedTime = new Date(item.snippet?.publishedAt || 0).getTime();
+      if (Date.now() - publishedTime > 20000) continue;
+
+      const reply = await generateAIReply("YouTube", authorName, text);
+
+      await fetch(
+        `https://www.googleapis.com/youtube/v3/liveChat/messages?part=snippet&access_token=${encodeURIComponent(
+          accessToken
+        )}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            snippet: {
+              liveChatId,
+              type: "textMessageEvent",
+              textMessageDetails: {
+                messageText: reply.slice(0, 200),
+              },
+            },
+          }),
+        }
+      );
+    }
+  } catch (err) {
+    console.error("YouTube polling error:", err.message);
+  }
+}
+
+setInterval(pollYouTubeLiveChat, 8000);
 app.get("/api/config", (req, res) => {
   res.json(activeConfig);
 });
