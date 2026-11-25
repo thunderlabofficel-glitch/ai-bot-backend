@@ -99,13 +99,14 @@ app.post("/api/config", async (req, res) => {
 });
 
 // Gemini AI Reply Generator (4 Models + Retry/Fallback)
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const extraModel = process.env.GEMINI_MODEL?.trim();
 
 const MODELS_TO_TRY = [
-  "gemini-3.8-flash",
+  ...(extraModel ? [extraModel] : []),
   "gemini-3.8-flash-lite",
   "gemini-2.5-flash-lite",
   "gemini-2.0-flash",
+  "gemini-3.8-flash",
 ];
 
 function sleep(ms) {
