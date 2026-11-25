@@ -5,6 +5,7 @@ import { GoogleGenAI } from "@google/genai";
 import { Client, GatewayIntentBits } from "discord.js";
 import makeWASocket, { DisconnectReason } from "@whiskeysockets/baileys";
 import pino from "pino";
+import QRCode from "qrcode";
 import { useMongoDBAuthState } from "./waMongoAuth.js";
 
 const app = express();
@@ -218,7 +219,7 @@ function startDiscordBot() {
   });
 }
 
-// WhatsApp Bot Setup (Baileys + MongoDB Session)
+// WhatsApp Bot Setup (Baileys + MongoDB Session + QR Page)
 let waConnected = false;
 let latestWaQr = null;
 
@@ -227,6 +228,29 @@ app.get("/api/wa-status", (req, res) => {
     connected: waConnected,
     qr: latestWaQr,
   });
+});
+
+app.get("/wa-qr", async (req, res) => {
+  if (waConnected) {
+    return res.send(
+      "<div style='font-family:sans-serif;text-align:center;margin-top:50px'><h2>WhatsApp already connected hai!</h2></div>"
+    );
+  }
+  if (!latestWaQr) {
+    return res.send(
+      "<div style='font-family:sans-serif;text-align:center;margin-top:50px'><h2>QR generate ho raha hai... page refresh ho raha hai.</h2></div><script>setTimeout(()=>location.reload(), 3000)</script>"
+    );
+  }
+
+  const qrImageUrl = await QRCode.toDataURL(latestWaQr);
+  res.send(`
+    <div style="font-family:sans-serif;text-align:center;margin-top:40px">
+      <h2>WhatsApp QR Scan Karein</h2>
+      <img src="${qrImageUrl}" style="width:280px;height:280px" />
+      <p>Phone ke WhatsApp mein <b>Linked Devices &rarr; Link a Device</b> se scan karein.</p>
+      <script>setTimeout(()=>location.reload(), 10000)</script>
+    </div>
+  `);
 });
 
 async function startWhatsAppBot() {
@@ -246,7 +270,7 @@ async function startWhatsAppBot() {
     if (qr) {
       latestWaQr = qr;
       console.log(
-        "Naya WhatsApp QR generate hua hai (/api/wa-status par available)."
+        "Naya WhatsApp QR generate hua hai (/wa-qr par scan karein)."
       );
     }
 
