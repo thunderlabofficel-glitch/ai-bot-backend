@@ -23,6 +23,7 @@ app.use((req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 
+// MongoDB Schema (User ka Prompt & Bot Config store karne ke liye)
 const botConfigSchema = new mongoose.Schema({
   userId: { type: String, default: "default_user", unique: true },
   businessName: { type: String, default: "My Brand" },
@@ -61,6 +62,7 @@ async function connectDB() {
   activeConfig = doc.toObject();
 }
 
+// API Endpoints: Web App / APK yahan se prompt padhegi aur update karegi
 app.get("/", (req, res) => {
   res.json({ status: "online", service: "AI Omni-Bot Backend" });
 });
@@ -96,7 +98,19 @@ app.post("/api/config", async (req, res) => {
   }
 });
 
+// Gemini AI Reply Generator (4 Models + Retry/Fallback)
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+const MODELS_TO_TRY = [
+  "gemini-3.8-flash",
+  "gemini-3.8-flash-lite",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function generateAIReply(platform, senderName, userMessage) {
   if (!process.env.GEMINI_API_KEY) {
@@ -111,14 +125,56 @@ User Instructions: ${activeConfig.systemPrompt}
 Rule: Seedha, helpful aur natural jawab do. Zyada lamba mat likho.
 `;
 
-  const response = await ai.models.generateContent({
-   model: "gemini-3.8-flash",
-    contents: `${fullInstruction}\n\n${senderName} ne pucha: "${userMessage}"`,
-  });
+  const promptText = `${fullInstruction}\n\n${senderName} ne pucha: "${userMessage}"`;
 
-  return response.text?.trim() || "Main abhi jawab nahi de pa raha hoon.";
+  for (const modelName of MODELS_TO_TRY) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: promptText,
+        });
+
+        const text = response.text?.trim();
+        if (text) {
+          return text;
+        }
+      } catch (err) {
+        const errMessage = err?.message || JSON.stringify(err) || "";
+        const isRetryable =
+          errMessage.includes("503") ||
+          errMessage.includes("UNAVAILABLE") ||
+          errMessage.includes("429") ||
+          errMessage.includes("RESOURCE_EXHAUSTED");
+
+        const isModelUnavailable =
+          errMessage.includes("404") || errMessage.includes("NOT_FOUND");
+
+        console.error(
+          `AI error [${modelName}] (attempt ${attempt}):`,
+          errMessage
+        );
+
+        if (isModelUnavailable) {
+          break;
+        }
+
+        if (isRetryable && attempt < 2) {
+          await sleep(1200);
+          continue;
+        }
+
+        if (isRetryable) {
+          break;
+        }
+      }
+    }
+  }
+
+  return "Abhi AI models par load zyada hai, kripya thodi der baad dobara try karein.";
 }
 
+// Discord Bot Setup
 function startDiscordBot() {
   if (!process.env.DISCORD_BOT_TOKEN) {
     console.log("DISCORD_BOT_TOKEN set nahi hai, Discord bot skip kiya gaya.");
@@ -134,7 +190,7 @@ function startDiscordBot() {
     ],
   });
 
-  client.once("ready", () => {
+  client.once("clientReady", () => {
     console.log(`Discord Bot online: ${client.user.tag}`);
   });
 
@@ -161,13 +217,13 @@ function startDiscordBot() {
   });
 }
 
+// WhatsApp Bot Setup (Baileys)
 async function startWhatsAppBot() {
   const { state, saveCreds } = await useMultiFileAuthState("./wa_auth_info");
 
   const sock = makeWASocket({
     auth: state,
     logger: pino({ level: "silent" }),
-    printQRInTerminal: true,
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -214,6 +270,7 @@ async function startWhatsAppBot() {
   });
 }
 
+// Boot Everything
 async function startServer() {
   await connectDB();
 
