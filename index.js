@@ -112,7 +112,7 @@ Rule: Seedha, helpful aur natural jawab do. Zyada lamba mat likho.
 `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+   model: "gemini-3.8-flash",
     contents: `${fullInstruction}\n\n${senderName} ne pucha: "${userMessage}"`,
   });
 
