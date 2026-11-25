@@ -3,11 +3,9 @@ import express from "express";
 import mongoose from "mongoose";
 import { GoogleGenAI } from "@google/genai";
 import { Client, GatewayIntentBits } from "discord.js";
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-} from "@whiskeysockets/baileys";
+import makeWASocket, { DisconnectReason } from "@whiskeysockets/baileys";
 import pino from "pino";
+import { useMongoDBAuthState } from "./waMongoAuth.js";
 
 const app = express();
 app.use(express.json());
@@ -66,108 +64,7 @@ async function connectDB() {
 app.get("/", (req, res) => {
   res.json({ status: "online", service: "AI Omni-Bot Backend" });
 });
-// --- INSTAGRAM WEBHOOK (Meta DM / Events) ---
-app.get("/webhook/instagram", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === process.env.IG_VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  }
-  return res.sendStatus(403);
-});
-
-app.post("/webhook/instagram", async (req, res) => {
-  // Meta ko turant 200 OK bhejna zaroori hai taaki retry na aaye
-  res.sendStatus(200);
-
-  try {
-    const entry = req.body?.entry?.[0];
-    const messaging = entry?.messaging?.[0];
-    const senderId = messaging?.sender?.id;
-    const messageText = messaging?.message?.text;
-
-    if (!senderId || !messageText || messaging?.message?.is_echo) return;
-    if (!process.env.IG_ACCESS_TOKEN) return;
-
-    const reply = await generateAIReply("Instagram", "Viewer", messageText);
-
-    await fetch(
-      `https://graph.facebook.com/v21.0/me/messages?access_token=${process.env.IG_ACCESS_TOKEN}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recipient: { id: senderId },
-          message: { text: reply },
-        }),
-      }
-    );
-  } catch (err) {
-    console.error("Instagram webhook error:", err.message);
-  }
-});
-
-// --- YOUTUBE LIVE CHAT AUTO-REPLY (Optional: YT_LIVE_CHAT_ID & YT_ACCESS_TOKEN set ho to) ---
-let seenYtMessageIds = new Set();
-
-async function pollYouTubeLiveChat() {
-  const liveChatId = process.env.YT_LIVE_CHAT_ID;
-  const accessToken = process.env.YT_ACCESS_TOKEN;
-  if (!liveChatId || !accessToken) return;
-
-  try {
-    const listUrl = `https://www.googleapis.com/youtube/v3/liveChat/messages?liveChatId=${encodeURIComponent(
-      liveChatId
-    )}&part=snippet,authorDetails&access_token=${encodeURIComponent(accessToken)}`;
-
-    const response = await fetch(listUrl);
-    const data = await response.json();
-    const items = data?.items || [];
-
-    for (const item of items) {
-      const msgId = item.id;
-      const text = item.snippet?.displayMessage;
-      const authorName = item.authorDetails?.displayName || "Viewer";
-
-      if (!msgId || !text || seenYtMessageIds.has(msgId)) continue;
-      seenYtMessageIds.add(msgId);
-
-      // Pehli baar load hone par purane messages ka spam bachane ke liye sirf naye messages ka reply karein
-      const publishedTime = new Date(item.snippet?.publishedAt || 0).getTime();
-      if (Date.now() - publishedTime > 20000) continue;
-
-      const reply = await generateAIReply("YouTube", authorName, text);
-
-      await fetch(
-        `https://www.googleapis.com/youtube/v3/liveChat/messages?part=snippet&access_token=${encodeURIComponent(
-          accessToken
-        )}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            snippet: {
-              liveChatId,
-              type: "textMessageEvent",
-              textMessageDetails: {
-                messageText: reply.slice(0, 200),
-              },
-            },
-          }),
-        }
-      );
-    }
-  } catch (err) {
-    console.error("YouTube polling error:", err.message);
-  }
-}
-
-setInterval(pollYouTubeLiveChat, 8000);
 app.get("/api/config", (req, res) => {
   res.json(activeConfig);
 });
@@ -199,7 +96,9 @@ app.post("/api/config", async (req, res) => {
   }
 });
 
-// Gemini AI Reply Generator (4 Models + Retry/Fallback)
+// Gemini AI Reply Generator (Free-tier friendly models + Retry/Fallback)
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
 const extraModel = process.env.GEMINI_MODEL?.trim();
 
 const MODELS_TO_TRY = [
@@ -273,7 +172,7 @@ Rule: Seedha, helpful aur natural jawab do. Zyada lamba mat likho.
     }
   }
 
-  return "Abhi AI models par load zyada hai, kripya thodi der baad dobara try karein.";
+  return `${activeConfig.businessName} ki taraf se: Abhi turant AI server par zyada load hai, kripya thodi der baad dobara try karein.`;
 }
 
 // Discord Bot Setup
@@ -319,29 +218,52 @@ function startDiscordBot() {
   });
 }
 
-// WhatsApp Bot Setup (Baileys)
+// WhatsApp Bot Setup (Baileys + MongoDB Session)
+let waConnected = false;
+let latestWaQr = null;
+
+app.get("/api/wa-status", (req, res) => {
+  res.json({
+    connected: waConnected,
+    qr: latestWaQr,
+  });
+});
+
 async function startWhatsAppBot() {
-  const { state, saveCreds } = await useMultiFileAuthState("./wa_auth_info");
+  const { state, saveCreds } = await useMongoDBAuthState("default_wa");
 
   const sock = makeWASocket({
     auth: state,
     logger: pino({ level: "silent" }),
+    browser: ["Chrome", "Desktop", "120.0.0"],
   });
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", (update) => {
-    const { connection, lastDisconnect } = update;
-    if (connection === "close") {
-      const shouldReconnect =
-        lastDisconnect?.error?.output?.statusCode !==
-        DisconnectReason.loggedOut;
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      latestWaQr = qr;
+      console.log(
+        "Naya WhatsApp QR generate hua hai (/api/wa-status par available)."
+      );
+    }
+
+    if (connection === "open") {
+      waConnected = true;
+      latestWaQr = null;
+      console.log("WhatsApp Bot connected aur ready hai!");
+    } else if (connection === "close") {
+      waConnected = false;
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log("WhatsApp connection closed. Reconnect:", shouldReconnect);
+
       if (shouldReconnect) {
+        await sleep(3000);
         startWhatsAppBot();
       }
-    } else if (connection === "open") {
-      console.log("WhatsApp Bot connected aur ready hai!");
     }
   });
 
