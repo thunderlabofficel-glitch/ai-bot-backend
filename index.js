@@ -232,23 +232,31 @@ app.get("/api/wa-status", (req, res) => {
 
 app.get("/wa-qr", async (req, res) => {
   if (waConnected) {
-    return res.send(
-      "<div style='font-family:sans-serif;text-align:center;margin-top:50px'><h2>WhatsApp already connected hai!</h2></div>"
-    );
+    return res.send(`
+      <div style="font-family:sans-serif;text-align:center;margin-top:50px">
+        <h2>WhatsApp already connected hai!</h2>
+        <p>Ab auto-reply active hai.</p>
+      </div>
+    `);
   }
   if (!latestWaQr) {
-    return res.send(
-      "<div style='font-family:sans-serif;text-align:center;margin-top:50px'><h2>QR generate ho raha hai... page refresh ho raha hai.</h2></div><script>setTimeout(()=>location.reload(), 3000)</script>"
-    );
+    return res.send(`
+      <div style="font-family:sans-serif;text-align:center;margin-top:50px">
+        <h2>QR generate ho raha hai...</h2>
+        <button onclick="location.reload()" style="padding:10px 18px;font-size:15px;cursor:pointer">Refresh</button>
+      </div>
+      <script>setTimeout(()=>location.reload(), 5000)</script>
+    `);
   }
 
   const qrImageUrl = await QRCode.toDataURL(latestWaQr);
   res.send(`
-    <div style="font-family:sans-serif;text-align:center;margin-top:40px">
+    <div style="font-family:sans-serif;text-align:center;margin-top:35px">
       <h2>WhatsApp QR Scan Karein</h2>
-      <img src="${qrImageUrl}" style="width:280px;height:280px" />
+      <img src="${qrImageUrl}" style="width:280px;height:280px;border:1px solid #ddd;padding:8px;border-radius:8px" />
       <p>Phone ke WhatsApp mein <b>Linked Devices &rarr; Link a Device</b> se scan karein.</p>
-      <script>setTimeout(()=>location.reload(), 10000)</script>
+      <button onclick="location.reload()" style="padding:10px 18px;font-size:15px;cursor:pointer">Naya QR / Refresh</button>
+      <script>setTimeout(()=>location.reload(), 60000)</script>
     </div>
   `);
 });
