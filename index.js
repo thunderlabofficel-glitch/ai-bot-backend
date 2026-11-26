@@ -219,15 +219,99 @@ function startDiscordBot() {
   });
 }
 
-// WhatsApp Bot Setup (Baileys + MongoDB Session + QR Page)
+// WhatsApp Bot Setup (Baileys + MongoDB Session + QR + Phone Pairing Code)
 let waConnected = false;
 let latestWaQr = null;
+let waSock = null;
+
+function cleanPhoneNumber(rawPhone) {
+  return String(rawPhone || "").replace(/\D/g, "");
+}
 
 app.get("/api/wa-status", (req, res) => {
   res.json({
     connected: waConnected,
     qr: latestWaQr,
   });
+});
+
+app.post("/api/wa-pair", async (req, res) => {
+  try {
+    if (waConnected) {
+      return res.json({ success: true, connected: true, message: "WhatsApp already connected hai." });
+    }
+
+    const phone = cleanPhoneNumber(req.body?.phone);
+    if (!phone || phone.length < 10) {
+      return res.status(400).json({
+        success: false,
+        error: "Sahi phone number country code ke saath daalein (jaise 919876543210).",
+      });
+    }
+
+    if (!waSock || typeof waSock.requestPairingCode !== "function") {
+      return res.status(503).json({
+        success: false,
+        error: "WhatsApp socket abhi initialize ho raha hai, 3-4 second baad dobara try karein.",
+      });
+    }
+
+    const rawCode = await waSock.requestPairingCode(phone);
+    const formattedCode = rawCode?.match(/.{1,4}/g)?.join("-") || rawCode;
+
+    res.json({
+      success: true,
+      phone,
+      code: formattedCode,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/wa-pair", (req, res) => {
+  if (waConnected) {
+    return res.send(`
+      <div style="font-family:sans-serif;text-align:center;margin-top:50px">
+        <h2>WhatsApp already connected hai!</h2>
+        <p>Ab auto-reply active hai.</p>
+      </div>
+    `);
+  }
+
+  res.send(`
+    <div style="font-family:sans-serif;max-width:420px;margin:40px auto;text-align:center;padding:20px;border:1px solid #ddd;border-radius:10px">
+      <h2>WhatsApp Number Pairing</h2>
+      <p style="color:#555;font-size:14px">Country code ke saath number daalein (jaise <b>916351643136</b>, bina + ke):</p>
+      <input id="phoneInput" type="text" placeholder="916351643136" style="width:90%;padding:10px;font-size:16px;margin-bottom:12px;border:1px solid #aaa;border-radius:6px" />
+      <br/>
+      <button onclick="getCode()" style="padding:10px 20px;font-size:15px;cursor:pointer">Pairing Code Lo</button>
+      <div id="result" style="margin-top:20px;font-size:18px;font-weight:bold"></div>
+      <p style="color:#666;font-size:13px;margin-top:16px">Phone WhatsApp mein <b>Linked Devices &rarr; Link a Device &rarr; Link with phone number instead</b> dabayein.</p>
+    </div>
+    <script>
+      async function getCode() {
+        const phone = document.getElementById("phoneInput").value.trim();
+        const box = document.getElementById("result");
+        box.innerHTML = "Code generate ho raha hai...";
+        try {
+          const r = await fetch("/api/wa-pair", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ phone })
+          });
+          const data = await r.json();
+          if (data.success) {
+            box.innerHTML = "Aapka Code: <span style='letter-spacing:3px;background:#f3f4f6;padding:6px 12px;border-radius:6px'>" + data.code + "</span>";
+          } else {
+            box.innerHTML = "<span style='color:red'>" + (data.error || "Error aaya") + "</span>";
+          }
+        } catch (e) {
+          box.innerHTML = "<span style='color:red'>Network error: " + e.message + "</span>";
+        }
+      }
+    </script>
+  `);
 });
 
 app.get("/wa-qr", async (req, res) => {
@@ -255,8 +339,9 @@ app.get("/wa-qr", async (req, res) => {
       <h2>WhatsApp QR Scan Karein</h2>
       <img src="${qrImageUrl}" style="width:280px;height:280px;border:1px solid #ddd;padding:8px;border-radius:8px" />
       <p>Phone ke WhatsApp mein <b>Linked Devices &rarr; Link a Device</b> se scan karein.</p>
+      <p><a href="/wa-pair">QR nahi chal raha? Phone number se pair karein</a></p>
       <button onclick="location.reload()" style="padding:10px 18px;font-size:15px;cursor:pointer">Naya QR / Refresh</button>
-      <script>setTimeout(()=>location.reload(), 1000000)</script>
+      <script>setTimeout(()=>location.reload(), 60000)</script>
     </div>
   `);
 });
@@ -270,6 +355,7 @@ async function startWhatsAppBot() {
     browser: ["Chrome", "Desktop", "120.0.0"],
   });
 
+  waSock = sock;
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
@@ -278,7 +364,7 @@ async function startWhatsAppBot() {
     if (qr) {
       latestWaQr = qr;
       console.log(
-        "Naya WhatsApp QR generate hua hai (/wa-qr par scan karein)."
+        "Naya WhatsApp QR generate hua hai (/wa-qr ya /wa-pair use karein)."
       );
     }
 
